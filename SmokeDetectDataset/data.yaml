@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['0']
+
+roboflow:
+  workspace: smoke-pllo7
+  project: smoke-v1trz
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/smoke-pllo7/smoke-v1trz/dataset/1

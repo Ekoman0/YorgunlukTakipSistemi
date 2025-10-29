@@ -1,7 +1,7 @@
 import cv2
 import dlib
 import torch
-from ultralytics import YOLO  # YOLOv8 için gerekli kütüphane
+from ultralytics import YOLO
 import imutils
 from scipy.spatial import distance
 from imutils import face_utils
@@ -14,20 +14,27 @@ CLOSED_EYE_TIME_LIMIT = 1.0
 MOUTH_MAR_THRESHOLD = 0.70
 YAWN_CONSEC_FRAMES = 15
 SMOKE_CONSEC_FRAMES = 10
+PHONE_CONSEC_FRAMES = 10  # telefon tespiti için ek sayaç
 
 # --- Global Değişkenler ve Sayaçlar ---
 EYE_CLOSED_START_TIME = None
 YAWN_COUNTER = 0
 SMOKE_COUNTER = 0
+PHONE_COUNTER = 0
 
 # --- Dlib Modellerini Yükleme ---
 print("[INFO] Yüz algılayıcı ve işaret noktası tahmincisi yükleniyor...")
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# --- YOLOv8 Modelini Yükle ---
+# --- YOLO Modellerini Yükle ---
 print("[INFO] Duman algılama modeli yükleniyor...")
-yolo_model = YOLO("yolov8n.pt")  # Smoke algılama için hazır model
+smoke_model = YOLO("best.pt")  # Smoke modeli
+print("Smoke model sınıfları:", smoke_model.names)
+
+print("[INFO] Telefon algılama modeli (YOLOv8n) yükleniyor...")
+phone_model = YOLO("yolov8n.pt")  # Telefon modeli (COCO dataset)
+print("Telefon model sınıfları:", phone_model.names)
 
 # --- Kilit Noktaları Tanımlama ---
 (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
@@ -52,7 +59,7 @@ def mouth_aspect_ratio(mouth):
 # --- Kamera Akışı ---
 print("[INFO] Kamera başlatılıyor...")
 vs = cv2.VideoCapture(0)
-cv2.namedWindow("Yorgunluk ve Duman Algilama", cv2.WINDOW_NORMAL)
+cv2.namedWindow("Yorgunluk ve Duman & Telefon Algilama", cv2.WINDOW_NORMAL)
 
 while True:
     ret, frame = vs.read()
@@ -65,8 +72,9 @@ while True:
     is_smoking = False
     is_tired = False
     is_yawning = False
+    is_phone = False
 
-    # --- Yüz için göz ve ağız algılama ---
+    # --- Yorgunluk tespiti ---
     for face in faces:
         shape = predictor(gray, face)
         shape = face_utils.shape_to_np(shape)
@@ -104,24 +112,39 @@ while True:
         cv2.putText(frame, f"MAR: {mouthMAR:.2f}", (300, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
     # --- YOLO ile Duman Algılama ---
-    results = yolo_model(frame)[0]  # results[0] frame sonuçları
+    smoke_results = smoke_model(frame, conf=0.55)[0]
 
-    for box, cls in zip(results.boxes.xyxy, results.boxes.cls):
-        label = yolo_model.names[int(cls)]
-        if "smoke" in label.lower() or "cigarette" in label.lower():
+    for box, cls in zip(smoke_results.boxes.xyxy, smoke_results.boxes.cls):
+        label = smoke_model.names[int(cls)]
+        if "0" in label.lower():
             is_smoking = True
             x1, y1, x2, y2 = box.cpu().numpy().astype(int)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(frame, label.upper(), (x1, y1 - 10),
+            cv2.putText(frame, "SMOKE", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+    # --- YOLO ile Telefon Algılama ---
+    phone_results = phone_model(frame, conf=0.55, classes=[67])[0]  # 67 = 'cell phone' COCO sınıf ID'si
+    for box, cls in zip(phone_results.boxes.xyxy, phone_results.boxes.cls):
+        x1, y1, x2, y2 = box.cpu().numpy().astype(int)
+        is_phone = True
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 165, 0), 2)
+        cv2.putText(frame, "CELL PHONE", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+
+    # Sayaçlar
     if is_smoking:
         SMOKE_COUNTER += 1
     else:
         SMOKE_COUNTER = 0
 
-    # --- Uyarı ---
-    if is_tired or is_yawning or (is_smoking and SMOKE_COUNTER >= SMOKE_CONSEC_FRAMES):
+    if is_phone:
+        PHONE_COUNTER += 1
+    else:
+        PHONE_COUNTER = 0
+
+    # --- Uyarılar ---
+    if is_tired or is_yawning or (is_smoking and SMOKE_COUNTER >= SMOKE_CONSEC_FRAMES) or (is_phone and PHONE_COUNTER >= PHONE_CONSEC_FRAMES):
         cv2.putText(frame, "DIKKAT! ACIL UYARI!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     elif is_tired:
         cv2.putText(frame, "Gozyorgunlugu basladi", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -129,8 +152,10 @@ while True:
         cv2.putText(frame, "Esneme basladi", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
     elif is_smoking:
         cv2.putText(frame, "Duman Algilandi", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    elif is_phone:
+        cv2.putText(frame, "Telefon Algilandi", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
 
-    cv2.imshow("Yorgunluk ve Duman Algilama", frame)
+    cv2.imshow("Yorgunluk ve Duman & Telefon Algilama", frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
