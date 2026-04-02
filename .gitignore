@@ -1,0 +1,78 @@
+# =============================================
+# GİZLİ DOSYALAR - ASLA PAYLAŞMA!
+# =============================================
+firebase-service-account.json
+google-services.json
+
+# =============================================
+# BÜYÜK MODEL DOSYALARI (Git LFS kullanabilirsin)
+# =============================================
+*.pt
+*.dat
+*.pth
+*.onnx
+*.pkl
+
+# =============================================
+# PYTHON
+# =============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# =============================================
+# FLUTTER / DART
+# =============================================
+mobile_app/.dart_tool/
+mobile_app/.flutter-plugins
+mobile_app/.flutter-plugins-dependencies
+mobile_app/.packages
+mobile_app/build/
+mobile_app/.pub-cache/
+mobile_app/.pub/
+mobile_app/ios/
+mobile_app/linux/
+mobile_app/macos/
+mobile_app/web/
+mobile_app/windows/
+
+# =============================================
+# ANDROID
+# =============================================
+mobile_app/android/.gradle/
+mobile_app/android/local.properties
+mobile_app/android/key.properties
+*.jks
+*.keystore
+
+# =============================================
+# IDE / EDITOR
+# =============================================
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# =============================================
+# LOG DOSYALARI
+# =============================================
+*.log
+driver_log.csv
+
+# =============================================
+# DATASET KLASÖRLERI (çok büyük olabilir)
+# =============================================
+PhoneDetectDataset/
+SmokeDetectDataset/
+phone_detection/
