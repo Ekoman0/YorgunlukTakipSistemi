@@ -1,0 +1,42 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Manuel çalıştırma butonu
+
+jobs:
+  build:
+    name: Build Flutter APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kodu çek
+        uses: actions/checkout@v4
+
+      - name: Java kurulumu
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Flutter kurulumu
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+
+      - name: Flutter bağımlılıklarını yükle
+        run: flutter pub get
+        working-directory: mobile_app
+
+      - name: APK Oluştur (Release)
+        run: flutter build apk --release
+        working-directory: mobile_app
+
+      - name: APK'yı artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: YorgunlukTakip-APK
+          path: mobile_app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
