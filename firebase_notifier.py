@@ -13,7 +13,7 @@ import os
 SERVICE_ACCOUNT_PATH = "firebase-service-account.json"
 
 # Telefondaki FCM token (uygulamadan kopyalayın)
-DEVICE_TOKEN = "eXLybeMMRfe9mVaITu0WY4:APA91bGhzLuwzFV-wnfX6DZL24tviWL27KkqSzXzWW126q89QVS6ys9z7GFuDPOke2YFkp5XQSI6msbmu9K8JTIwU7EwH8m634j6FxCB2kyXvUJg2JArQVw"
+DEVICE_TOKEN = "f_fOJFzaTcW_CVoDnPeQeP:APA91bGw4Y7-kfIOh8kP_TWJvX_1HF27Xuhr_cmsklbCbXinLQOetkn3lEG25PjyertlB41x1aMKpoF9vyFHqbGvzIS6yE-GlCUJ3IYODKej3L5neMW1BO8"
 
 # =====================================================
 
