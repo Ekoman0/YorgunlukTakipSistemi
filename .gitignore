@@ -71,8 +71,8 @@ Thumbs.db
 driver_log.csv
 
 # =============================================
-# DATASET KLASÖRLERI (çok büyük olabilir)
+# DATASET KLASÖRLERI - Git LFS ile takip ediliyor
 # =============================================
-PhoneDetectDataset/
-SmokeDetectDataset/
-phone_detection/
+# PhoneDetectDataset/ --> Git LFS ile yönetiliyor
+# SmokeDetectDataset/ --> Git LFS ile yönetiliyor
+# phone_detection/    --> Git LFS ile yönetiliyor
