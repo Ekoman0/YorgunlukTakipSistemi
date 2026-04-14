@@ -5,10 +5,10 @@ firebase-service-account.json
 google-services.json
 
 # =============================================
-# BÜYÜK MODEL DOSYALARI (Git LFS kullanabilirsin)
+# BÜYÜK MODEL DOSYALARI - Git LFS ile takip ediliyor
 # =============================================
-*.pt
-*.dat
+# *.pt  --> Git LFS ile yönetiliyor
+# *.dat --> Git LFS ile yönetiliyor
 *.pth
 *.onnx
 *.pkl
