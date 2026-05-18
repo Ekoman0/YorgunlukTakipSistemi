@@ -1,13 +1,18 @@
 import cv2
 import dlib
-import torch
-from ultralytics import YOLO
 import imutils
 from scipy.spatial import distance
 from imutils import face_utils
 import time
 import numpy as np
 import os
+import sys
+import threading
+import mediapipe as mp
+from ultralytics import YOLO
+
+# --- Kamera Seçim Modülü ---
+from camera_selector import select_camera
 
 # --- Firebase FCM Bildirimi ---
 try:
@@ -23,8 +28,8 @@ EAR_THRESHOLD = 0.25
 CLOSED_EYE_TIME_LIMIT = 1.0
 MOUTH_MAR_THRESHOLD = 0.70
 YAWN_CONSEC_FRAMES = 15
-SMOKE_CONSEC_FRAMES = 10
-PHONE_CONSEC_FRAMES = 10
+SMOKE_CONSEC_FRAMES = 5   # Az düşürüldü: daha hızlı uyarı
+PHONE_CONSEC_FRAMES = 5   # Az düşürüldü: daha hızlı uyarı
 
 # --- Baş Eğilmesi Ayarları ---
 HEAD_TILT_THRESHOLD = 20  # Derece cinsinden eşik değeri
@@ -47,19 +52,20 @@ print("[INFO] Yüz algılayıcı ve işaret noktası tahmincisi yükleniyor...")
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# --- YOLO Modellerini Yükle ---
-print("[INFO] Duman algılama modeli yükleniyor...")
-smoke_model = YOLO("best.pt")
-print("Smoke model sınıfları:", smoke_model.names)
+# --- MediaPipe Hands Yükleme ---
+print("[INFO] MediaPipe El Takibi (Hands) yükleniyor (Python 3.10)...")
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
+mp_drawing = mp.solutions.drawing_utils
 
-print("[INFO] Sigara algılama modeli yükleniyor...")
-# YENİ EKLENEN MODEL
-cigarette_model = YOLO("cigarettedetect.pt")
-print("Sigara modeli sınıfları:", cigarette_model.names)
-
-print("[INFO] Telefon algılama modeli (YOLOv8n) yükleniyor...")
-phone_model = YOLO("yolov8n.pt")
-print("Telefon model sınıfları:", phone_model.names)
+# --- YOLOv8 Telefon Algılama Yükleme ---
+print("[INFO] Telefon algılama modeli (YOLOv8s) yükleniyor...")
+phone_model = YOLO("yolov8s.pt")
 
 # --- Kilit Noktaları Tanımlama ---
 (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
@@ -106,29 +112,151 @@ def calculate_head_pitch(shape):
         return pitch_angle
     return 0
 
-# --- Kamera Akışı ve Çözünürlük Ayarı ---
-print("[INFO] Kamera başlatılıyor...")
-vs = cv2.VideoCapture(0)
+# (YOLO önişleme ve ROI fonksiyonları kaldırıldı çünkü artık MediaPipe kullanıyoruz)
 
-# Çözünürlüğü 640x480 olarak ayarla (Daha iyi performans için)
-vs.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-vs.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# --- Kamera Seçimi (GUI) ---
+print("[INFO] Kamera seçim ekranı açılıyor...")
+camera_choice = select_camera()
+
+if camera_choice is None:
+    print("[INFO] Kamera seçilmedi. Program kapatılıyor.")
+    sys.exit(0)
+
+camera_type, camera_source = camera_choice
+
+# Kamera etiket ve açıklamaları
+_CAMERA_LABELS = {
+    "laptop": ("Laptop Kamerasi", (180, 255, 180)),
+    "wifi":   ("iPhone - Wi-Fi",  (180, 220, 255)),
+    "usb":    ("iPhone - USB",    (255, 220, 180)),
+}
+CAMERA_LABEL_TEXT, CAMERA_LABEL_COLOR = _CAMERA_LABELS.get(
+    camera_type, ("Kamera", (255, 255, 255))
+)
+
+# --- Kamera Akışı ve Çözünürlük Ayarı ---
+print(f"[INFO] Kamera başlatılıyor: {camera_type} → {camera_source}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Threaded VideoCapture: kamera okuma ayrı thread'de döner,
+# ana döngü frame bekliyerek bloklanmaz → FPS önemli ölçüde artar.
+# ─────────────────────────────────────────────────────────────────────────────
+class ThreadedCapture:
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.ret = False
+        self.frame = None
+        self._lock = threading.Lock()
+        self._stop = False
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self):
+        while not self._stop:
+            ret, frame = self.cap.read()
+            with self._lock:
+                self.ret = ret
+                self.frame = frame
+
+    def read(self):
+        with self._lock:
+            return self.ret, (self.frame.copy() if self.frame is not None else None)
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def release(self):
+        self._stop = True
+        self._thread.join(timeout=2)
+        self.cap.release()
+
+vs = ThreadedCapture(camera_source)
+time.sleep(0.5)  # thread'in ilk frame'i okuması için kısa bekleme
+
+if not vs.isOpened():
+    print("[HATA] Kamera açılamadı! Lütfen bağlantıyı kontrol edin.")
+    import tkinter as tk
+    from tkinter import messagebox
+    _r = tk.Tk(); _r.withdraw()
+    messagebox.showerror(
+        "Kamera Hatası",
+        f"Kamera açılamadı!\n\nKaynak: {camera_source}\n\n"
+        "• Wi-Fi yöntemi için: IP/Port doğru mu? Uygulama açık mı?\n"
+        "• USB yöntemi için: Camo/EpocCam kurulu ve iPhone bağlı mı?\n"
+        "• Laptop kamerası için: Kamera başka bir uygulama tarafından kullanılıyor mu?"
+    )
+    _r.destroy()
+    sys.exit(1)
+
+# ───────────────────────────────────────────────────────────────────────────
+# FPS ve YOLO ayarları
+# ───────────────────────────────────────────────────────────────────────────
+YOLO_SKIP_FRAMES = 5
+_yolo_frame_counter = 0
+_fps_frame_counter  = 0
+_fps_start = time.time()
+_fps_value = 0.0
+
+# Telefon Bounding Box Cache
+_last_phone_boxes = []
 
 cv2.namedWindow("Yorgunluk ve Duman & Telefon Algilama", cv2.WINDOW_NORMAL)
 
 while True:
     ret, frame = vs.read()
-    if not ret:
-        break
+    if not ret or frame is None:
+        time.sleep(0.005)
+        continue
 
-    (h, w) = frame.shape[:2] # Çerçevenin genişlik ve yüksekliğini al
+    # FPS hesapla
+    _fps_frame_counter += 1
+    elapsed = time.time() - _fps_start
+    if elapsed >= 0.5:
+        _fps_value = _fps_frame_counter / elapsed
+        _fps_frame_counter = 0
+        _fps_start = time.time()
+
+    (h, w) = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
     faces = detector(gray, 0)
+    
+    # --- MediaPipe ile El ve Parmak Takibi ---
+    hand_results = hands.process(rgb_frame)
+    hand_hulls = [] # Algılanan ellerin sınırları (collider)
+    
+    if hand_results.multi_hand_landmarks:
+        for hand_landmarks in hand_results.multi_hand_landmarks:
+            # 21 noktanın hepsini piksel koordinatına çevir
+            points = []
+            for lm in hand_landmarks.landmark:
+                px, py = int(lm.x * w), int(lm.y * h)
+                points.append([px, py])
+                
+            points = np.array(points, dtype=np.int32)
+            
+            # Tüm parmakları sarmalayan en dış şekli (Convex Hull) oluştur
+            hull = cv2.convexHull(points)
+            hand_hulls.append(hull)
+
+    # --- YOLO ile Telefon Tespiti (Mesajlaşma/Video için) ---
+    _yolo_frame_counter += 1
+    if _yolo_frame_counter % YOLO_SKIP_FRAMES == 0:
+        # Sadece 67 (cell phone) sınıfını arıyoruz. 
+        # imgsz=320 ile performansı koruyoruz.
+        phone_res = phone_model(frame, conf=0.45, imgsz=320, classes=[67], verbose=False)[0]
+        _last_phone_boxes = []
+        for box in phone_res.boxes.xyxy:
+            _last_phone_boxes.append(box.cpu().numpy().astype(int))
 
     is_smoking = False
     is_tired = False
     is_yawning = False
     is_phone = False
+    is_texting = False # Yeni mesajlaşma durumu
     is_head_tilted = False
     is_face_lost = False # Yüz kaybı bayrağı
     closed_duration = 0.0
@@ -141,7 +269,6 @@ while True:
 
     # --- Yüz Algılama ve Yorgunluk Tespiti ---
     if len(faces) > 0:
-        # Yüz algılandı: Son algılanma zamanını güncelle
         LAST_FACE_TIME = time.time()
         
         for face in faces:
@@ -151,6 +278,53 @@ while True:
             leftEye = shape[lStart:lEnd]
             rightEye = shape[rStart:rEnd]
             mouth = shape[mStart:mEnd]
+
+            # --- Yüz Genişliği ve Referans Noktaları (Dlib) ---
+            # Yüz genişliğini hesaplamak için şakak hizasındaki en geniş noktaları (0 ve 16) kullanıyoruz
+            face_width = distance.euclidean(shape[0], shape[16])
+            
+            # Kulak noktalarını tam kulağın ortasına (1 ve 15) alıyoruz.
+            left_ear_pt = shape[1]
+            right_ear_pt = shape[15]
+            mouth_center = mouth.mean(axis=0)
+
+            # Hedef noktaları ekranda mavi göster (Hata ayıklama / görsellik)
+            cv2.circle(frame, (int(mouth_center[0]), int(mouth_center[1])), 5, (255, 0, 0), -1)
+            cv2.circle(frame, (int(left_ear_pt[0]), int(left_ear_pt[1])), 5, (255, 0, 0), -1)
+            cv2.circle(frame, (int(right_ear_pt[0]), int(right_ear_pt[1])), 5, (255, 0, 0), -1)
+
+            # --- Gerçek El Collider Kontrolü (MediaPipe) ---
+            # Tolerans: Collider'ın kaç piksel dışına kadar algılasın (yüz genişliğinin %10'u kadar)
+            tolerance = face_width * 0.10
+            
+            for hull in hand_hulls:
+                # Ağız noktasının el collider'ına (hull) olan mesafesini hesapla
+                # Eğer değer pozitifse: Nokta içeride
+                # Eğer değer negatifse: Nokta dışarıda (uzaklık olarak döner)
+                mouth_dist = cv2.pointPolygonTest(hull, (float(mouth_center[0]), float(mouth_center[1])), True)
+                l_ear_dist = cv2.pointPolygonTest(hull, (float(left_ear_pt[0]), float(left_ear_pt[1])), True)
+                r_ear_dist = cv2.pointPolygonTest(hull, (float(right_ear_pt[0]), float(right_ear_pt[1])), True)
+                
+                collider_color = (0, 255, 0) # Normalde yeşil collider
+                
+                # Ağız elin içindeyse veya çok yakınındaysa (tolerans)
+                if mouth_dist >= -tolerance:
+                    is_smoking = True
+                    collider_color = (0, 0, 255) # Kırmızı
+                    
+                # Kulak elin içindeyse veya çok yakınındaysa
+                elif l_ear_dist >= -tolerance or r_ear_dist >= -tolerance:
+                    is_phone = True
+                    collider_color = (0, 165, 255) # Turuncu
+                    
+                # Eli tam şekliyle çiz (Kusursuz parmak kenarları)
+                cv2.drawContours(frame, [hull], -1, collider_color, 2)
+                # İçini hafif şeffaf doldurmak istersen: cv2.fillPoly(frame, [hull], (0,255,0)) yapabilirsin ama çizgili daha iyi.
+                
+                # Etiket
+                # Hull'un en üst noktasını bulup yazıyı oraya yazalım
+                top_point = tuple(hull[hull[:, :, 1].argmin()][0])
+                cv2.putText(frame, "EL COLLIDER", (top_point[0] - 40, top_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, collider_color, 2)
 
             ear = (eye_aspect_ratio(leftEye) + eye_aspect_ratio(rightEye)) / 2.0
             mouthMAR = mouth_aspect_ratio(mouth)
@@ -192,6 +366,13 @@ while True:
             else:
                 HEAD_TILT_COUNTER = 0
 
+            # --- Telefona Bakma (Texting) Kontrolü ---
+            # Eğer kamera açısında bir telefon varsa VE sürücünün başı öne eğikse
+            # (veya telefon algılanmışsa ve el telefonun üzerindeyse, 
+            # şimdilik sadece telefon + baş eğikliği yeterli)
+            if len(_last_phone_boxes) > 0 and is_head_tilted:
+                is_texting = True
+
             # Sağ üst köşeye Bilgi metinleri
             cv2.putText(frame, f"EAR: {ear:.2f}", (display_x, current_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
             current_y += line_spacing
@@ -215,35 +396,30 @@ while True:
         current_y += line_spacing
 
 
-    # --- YOLO ile Duman Algılama ---
-    smoke_results = smoke_model(frame, conf=0.55)[0]
+    # ─────────────────────────────────────────────────────────────────
+    # YOLO – Her YOLO_SKIP_FRAMES frame'de bir çalışır.
+    # imgsz=320  → varsayılan 640'dan ~4x daha hızlı inference
+    # verbose=False → console spam yok, işlemci biraz rahatlar
+    # ─────────────────────────────────────────────────────────────────
+    # --- (Eski YOLO kodları silindi) ---
+    
+    # Telefon / Sigara uyarılarını ekrana yazdır
+    if is_smoking:
+        cv2.putText(frame, "EL-AGIZ (SIGARA?)", (10, current_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        current_y += line_spacing
+        
+    if is_phone:
+        cv2.putText(frame, "EL-KULAK (TELEFONLA KONUSMA?)", (10, current_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        current_y += line_spacing
 
-    for box, cls in zip(smoke_results.boxes.xyxy, smoke_results.boxes.cls):
-        label = smoke_model.names[int(cls)]
-        if "0" in label.lower():
-            is_smoking = True
-            x1, y1, x2, y2 = box.cpu().numpy().astype(int)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(frame, "SMOKE", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    if is_texting:
+        cv2.putText(frame, "TELEFONA BAKIYOR (MESAJ/VIDEO)!", (10, current_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        current_y += line_spacing
 
-    # --- YOLO ile Sigara Algılama (YENİ EKLENDİ) ---
-    cigarette_results = cigarette_model(frame, conf=0.30)[0]
-    for box, cls in zip(cigarette_results.boxes.xyxy, cigarette_results.boxes.cls):
-        is_smoking = True # Sigara algılandığında duman bayrağını da tetikler
-        x1, y1, x2, y2 = box.cpu().numpy().astype(int)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-        cv2.putText(frame, "SIGARA", (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-    # --- YOLO ile Telefon Algılama ---
-    phone_results = phone_model(frame, conf=0.55, classes=[67])[0]
-    for box, cls in zip(phone_results.boxes.xyxy, phone_results.boxes.cls):
-        x1, y1, x2, y2 = box.cpu().numpy().astype(int)
-        is_phone = True
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 165, 0), 2)
-        cv2.putText(frame, "CELL PHONE", (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+    # YOLO ile bulunan telefonu ekranda göster
+    for (x1, y1, x2, y2) in _last_phone_boxes:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        cv2.putText(frame, "TELEFON", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
     # Sayaçlar
     if is_smoking:
@@ -305,6 +481,16 @@ while True:
             fcm.send_smoking_alert()
         elif is_phone and PHONE_COUNTER >= PHONE_CONSEC_FRAMES:
             fcm.send_phone_alert()
+
+    # --- FPS + Kamera tipi etiketi (sağ alt köşe) ---
+    overlay_text = f"{CAMERA_LABEL_TEXT}  |  {_fps_value:.1f} FPS"
+    label_size, _ = cv2.getTextSize(overlay_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    lw, lh = label_size
+    lx = w - lw - 12
+    ly = h - 10
+    cv2.rectangle(frame, (lx - 6, ly - lh - 6), (lx + lw + 6, ly + 4), (20, 20, 40), -1)
+    cv2.putText(frame, overlay_text, (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, CAMERA_LABEL_COLOR, 1, cv2.LINE_AA)
 
     cv2.imshow("Yorgunluk ve Duman & Telefon Algilama", frame)
 

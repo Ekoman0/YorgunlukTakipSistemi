@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:  # Manuel çalıştırma butonu
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -25,13 +28,24 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
+          cache: true
 
       - name: Flutter bağımlılıklarını yükle
         run: flutter pub get
         working-directory: mobile_app
 
+      - name: Assets klasörlerini oluştur (yoksa)
+        run: |
+          mkdir -p assets/sounds
+          mkdir -p assets/images
+        working-directory: mobile_app
+
+      - name: flutter analyze (hataları gör)
+        run: flutter analyze --no-fatal-infos || true
+        working-directory: mobile_app
+
       - name: APK Oluştur (Release)
-        run: flutter build apk --release
+        run: flutter build apk --release --verbose
         working-directory: mobile_app
 
       - name: APK'yı artifact olarak yükle

@@ -3,6 +3,7 @@
 # =============================================
 firebase-service-account.json
 google-services.json
+camera_config.json
 
 # =============================================
 # BÜYÜK MODEL DOSYALARI - Git LFS ile takip ediliyor
